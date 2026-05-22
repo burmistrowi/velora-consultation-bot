@@ -45,24 +45,48 @@ class Settings(BaseSettings):
 
     CONSULTATION_PRICE: float = 1500.0
 
+    @staticmethod
+    def _clean_token(value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip().strip('"').strip("'")
+
+    @classmethod
+    def _looks_like_bot_token(cls, value: str) -> bool:
+        return bool(re.match(r"^\d+:[A-Za-z0-9_-]+$", cls._clean_token(value)))
+
     @model_validator(mode="before")
     @classmethod
     def _normalize_env(cls, data: object) -> object:
-        """Поддержка панелей, где токен задан под произвольным именем переменной."""
+        """BOT_TOKEN из env; автопоиск только если явно не задан."""
         merged = dict(data) if isinstance(data, dict) else {}
-        if merged.get("BOT_TOKEN"):
-            return merged
+
+        for key in ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN"):
+            raw = merged.get(key) or os.environ.get(key)
+            if raw:
+                merged["BOT_TOKEN"] = cls._clean_token(raw)
+                return merged
+
         token_re = re.compile(r"^\d+:[A-Za-z0-9_-]+$")
-        for value in os.environ.values():
-            if isinstance(value, str) and token_re.match(value.strip()):
-                merged["BOT_TOKEN"] = value.strip()
+        skip_keys = {"WEBHOOK_URL", "DATABASE_URL"}
+        for key, value in os.environ.items():
+            if key.upper() in skip_keys:
+                continue
+            cleaned = cls._clean_token(value)
+            if token_re.match(cleaned):
+                merged["BOT_TOKEN"] = cleaned
                 break
         return merged
 
     @model_validator(mode="after")
     def _validate_bot_token(self) -> "Settings":
+        self.BOT_TOKEN = self._clean_token(self.BOT_TOKEN)
         if not self.BOT_TOKEN:
             raise ValueError("BOT_TOKEN is required (set BOT_TOKEN in .env or environment)")
+        if not self._looks_like_bot_token(self.BOT_TOKEN):
+            raise ValueError(
+                "BOT_TOKEN has invalid format. Expected: 123456789:AA... from @BotFather"
+            )
         return self
 
     @property
